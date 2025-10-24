@@ -81,18 +81,33 @@ function processPickingData(data) {
     
     rows.forEach((row, index) => {
         if (row.length > 12) {
-            const quantity = row[8];    // I列 (索引8) - 拣货数量
-            const worker = row[11];     // L列 (索引11) - 拣货员
-            const time = row[12];       // M列 (索引12) - 操作时间
+            const quantity = row[8];     // I列 (索引8) - 拣货数量
+            const singleCount = row[9];  // J列 (索引9) - 一分数（单品）
+            const multiCount = row[10];  // K列 (索引10) - 二分数（多品）
+            const worker = row[11];      // L列 (索引11) - 拣货员
+            const time = row[12];        // M列 (索引12) - 操作时间
             
             if (worker && time) {
-                const qty = parseInt(quantity) || 1; // 转换为数字，默认为1
+                const qty = parseInt(quantity) || 1;
                 const parsedTime = parseExcelDate(time);
+                
+                // 判断是单品还是多品
+                const single = parseInt(singleCount) || 0;
+                const multi = parseInt(multiCount) || 0;
+                
+                let itemType = 'unknown';
+                if (single > 0) {
+                    itemType = 'single';  // 单品
+                } else if (multi > 0) {
+                    itemType = 'multi';   // 多品
+                }
+                
                 result.push({
                     worker: String(worker),
                     time: parsedTime,
                     quantity: qty,
-                    type: 'picking'
+                    type: 'picking',
+                    itemType: itemType  // 单品/多品标识
                 });
             }
         }
@@ -325,24 +340,44 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
     
     const workerMap = new Map();
     
-    // 处理 Picking 数据
+    // 处理 Picking 数据（分单品和多品）
     if (pickingData && pickingData.length > 0) {
         const totalPickQuantity = pickingData.reduce((sum, item) => sum + (item.quantity || 0), 0);
+        const singleItems = pickingData.filter(item => item.itemType === 'single');
+        const multiItems = pickingData.filter(item => item.itemType === 'multi');
+        const singleCount = singleItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
+        const multiCount = multiItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
+        
         log(`  处理 Picking 数据 (${pickingData.length} 条记录, 总数量: ${totalPickQuantity})`);
+        log(`    - 单品: ${singleCount} 件 (${singleItems.length} 条)`);
+        log(`    - 多品: ${multiCount} 件 (${multiItems.length} 条)`);
         
         pickingData.forEach(item => {
             if (!workerMap.has(item.worker)) {
                 workerMap.set(item.worker, {
                     worker: item.worker,
                     pickingTimes: [],
+                    pickingSingleTimes: [],  // 单品时间
+                    pickingMultiTimes: [],   // 多品时间
                     packingTimes: [],
                     pickCount: 0,
+                    pickSingleCount: 0,      // 单品件数
+                    pickMultiCount: 0,       // 多品件数
                     packCount: 0
                 });
             }
             const worker = workerMap.get(item.worker);
             worker.pickingTimes.push(item.time);
-            worker.pickCount += item.quantity || 1; // 累加实际数量
+            worker.pickCount += item.quantity || 1;
+            
+            // 分类统计单品和多品
+            if (item.itemType === 'single') {
+                worker.pickingSingleTimes.push(item.time);
+                worker.pickSingleCount += item.quantity || 1;
+            } else if (item.itemType === 'multi') {
+                worker.pickingMultiTimes.push(item.time);
+                worker.pickMultiCount += item.quantity || 1;
+            }
         });
         log(`  Picking 数据处理完成`);
     }
@@ -374,8 +409,16 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
     const report = [];
     
     workerMap.forEach((data, worker) => {
-        // 计算 Picking EWH
-        const pickingEWH = calculateEWH(data.pickingTimes);
+        // 计算 Picking 单品和多品 EWH（详细算法 + 5% 补偿）
+        const pickingSingleEWH = data.pickingSingleTimes.length > 0 
+            ? calculateEWH(data.pickingSingleTimes) * 1.05  // 5% 补偿
+            : 0;
+        const pickingMultiEWH = data.pickingMultiTimes.length > 0 
+            ? calculateEWH(data.pickingMultiTimes) * 1.05   // 5% 补偿
+            : 0;
+        
+        // 计算总 Picking EWH
+        const pickingEWH = pickingSingleEWH + pickingMultiEWH;
         
         // 计算 Packing EWH
         const packingEWH = calculateEWH(data.packingTimes);
@@ -384,8 +427,23 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
         const totalEWH = pickingEWH + packingEWH;
         
         // 计算 UPH
-        const pickingUPH = pickingEWH > 0 ? (data.pickCount / pickingEWH) : 0;
+        const pickingSingleUPH = pickingSingleEWH > 0 ? (data.pickSingleCount / pickingSingleEWH) : 0;
+        const pickingMultiUPH = pickingMultiEWH > 0 ? (data.pickMultiCount / pickingMultiEWH) : 0;
         const packingUPH = packingEWH > 0 ? (data.packCount / packingEWH) : 0;
+        
+        // 输出详细日志
+        if (data.pickSingleCount > 0 || data.pickMultiCount > 0) {
+            log(`  ${worker}:`);
+            if (data.pickSingleCount > 0) {
+                log(`    单品: ${data.pickSingleCount}件, EWH: ${round(pickingSingleEWH, 2)}h (含5%补偿), UPH: ${round(pickingSingleUPH, 2)}`);
+            }
+            if (data.pickMultiCount > 0) {
+                log(`    多品: ${data.pickMultiCount}件, EWH: ${round(pickingMultiEWH, 2)}h (含5%补偿), UPH: ${round(pickingMultiUPH, 2)}`);
+            }
+            if (data.packCount > 0) {
+                log(`    打包: ${data.packCount}件, EWH: ${round(packingEWH, 2)}h, UPH: ${round(packingUPH, 2)}`);
+            }
+        }
         
         report.push({
             Date: date,
@@ -393,12 +451,14 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
             EWH: round(totalEWH, 2),
             department: 'OB',
             worker: worker,
-            pick: data.pickCount > 0 ? data.pickCount : '',
+            '拣货单品': data.pickSingleCount > 0 ? data.pickSingleCount : '',
+            '拣货多品': data.pickMultiCount > 0 ? data.pickMultiCount : '',
             pack: data.packCount > 0 ? data.packCount : '',
             box: '',
             Preshipment: '',
+            '单品UPH': pickingSingleUPH > 0 ? round(pickingSingleUPH, 2) : '',
+            '多品UPH': pickingMultiUPH > 0 ? round(pickingMultiUPH, 2) : '',
             'Packing UPH': packingUPH > 0 ? round(packingUPH, 2) : '',
-            'Picking UPH': pickingUPH > 0 ? round(pickingUPH, 2) : '',
             'Preship UPH': ''
         });
     });
@@ -433,12 +493,14 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
                     EWH: ps.ewh,
                     department: 'OB',
                     worker: ps.name,
-                    pick: '',
+                    '拣货单品': '',
+                    '拣货多品': '',
                     pack: '',
                     box: '',
                     Preshipment: ps.quantity,
+                    '单品UPH': '',
+                    '多品UPH': '',
                     'Packing UPH': '',
-                    'Picking UPH': '',
                     'Preship UPH': preshipUPH
                 });
                 log(`  ${ps.name}: Preshipment=${ps.quantity}, EWH=${ps.ewh}, UPH=${preshipUPH || '0'} (新增员工)`);
