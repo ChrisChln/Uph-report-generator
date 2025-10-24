@@ -451,14 +451,12 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
             EWH: round(totalEWH, 2),
             department: 'OB',
             worker: worker,
-            '拣货单品': data.pickSingleCount > 0 ? data.pickSingleCount : '',
-            '拣货多品': data.pickMultiCount > 0 ? data.pickMultiCount : '',
+            pick: data.pickCount > 0 ? data.pickCount : '',
             pack: data.packCount > 0 ? data.packCount : '',
             box: '',
             Preshipment: '',
-            '单品UPH': pickingSingleUPH > 0 ? round(pickingSingleUPH, 2) : '',
-            '多品UPH': pickingMultiUPH > 0 ? round(pickingMultiUPH, 2) : '',
             'Packing UPH': packingUPH > 0 ? round(packingUPH, 2) : '',
+            'Picking UPH': (pickingSingleUPH + pickingMultiUPH) > 0 ? round((data.pickCount / pickingEWH), 2) : '',
             'Preship UPH': ''
         });
     });
@@ -493,14 +491,12 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
                     EWH: ps.ewh,
                     department: 'OB',
                     worker: ps.name,
-                    '拣货单品': '',
-                    '拣货多品': '',
+                    pick: '',
                     pack: '',
                     box: '',
                     Preshipment: ps.quantity,
-                    '单品UPH': '',
-                    '多品UPH': '',
                     'Packing UPH': '',
+                    'Picking UPH': '',
                     'Preship UPH': preshipUPH
                 });
                 log(`  ${ps.name}: Preshipment=${ps.quantity}, EWH=${ps.ewh}, UPH=${preshipUPH || '0'} (新增员工)`);
@@ -822,21 +818,30 @@ function aggregateEfficiencyData(pickingData, packingData) {
     
     const workerMap = new Map();
     
-    // 处理 Picking 数据
+    // 处理 Picking 数据（分单品和多品）
     if (pickingData && pickingData.length > 0) {
         pickingData.forEach(item => {
             if (!workerMap.has(item.worker)) {
                 workerMap.set(item.worker, {
                     worker: item.worker,
-                    pickingTimes: [],
+                    pickingSingleTimes: [],
+                    pickingMultiTimes: [],
                     packingTimes: [],
-                    pickingQuantity: 0,
+                    pickingSingleQuantity: 0,
+                    pickingMultiQuantity: 0,
                     packingQuantity: 0
                 });
             }
             const worker = workerMap.get(item.worker);
-            worker.pickingTimes.push(item.time);
-            worker.pickingQuantity += item.quantity || 1;
+            
+            // 根据itemType分类
+            if (item.itemType === 'single') {
+                worker.pickingSingleTimes.push(item.time);
+                worker.pickingSingleQuantity += item.quantity || 1;
+            } else if (item.itemType === 'multi') {
+                worker.pickingMultiTimes.push(item.time);
+                worker.pickingMultiQuantity += item.quantity || 1;
+            }
         });
     }
     
@@ -846,9 +851,11 @@ function aggregateEfficiencyData(pickingData, packingData) {
             if (!workerMap.has(item.worker)) {
                 workerMap.set(item.worker, {
                     worker: item.worker,
-                    pickingTimes: [],
+                    pickingSingleTimes: [],
+                    pickingMultiTimes: [],
                     packingTimes: [],
-                    pickingQuantity: 0,
+                    pickingSingleQuantity: 0,
+                    pickingMultiQuantity: 0,
                     packingQuantity: 0
                 });
             }
@@ -861,19 +868,36 @@ function aggregateEfficiencyData(pickingData, packingData) {
     // 计算每个员工的 EWH
     const result = [];
     workerMap.forEach((data, workerName) => {
-        // 计算 Picking EWH
-        let pickingEwh = 0;
-        let pickingWarning = false;
-        let pickingDetailedEwh = 0;
-        let pickingSegments = [];
+        // 计算 Picking 单品 EWH
+        let pickingSingleEwh = 0;
+        let pickingSingleWarning = false;
+        let pickingSingleDetailedEwh = 0;
+        let pickingSingleSegments = [];
         
-        if (data.pickingTimes.length > 0) {
-            data.pickingTimes.sort((a, b) => a - b);
-            const pickingResult = calculateEfficiencyEWH(data.pickingTimes);
-            pickingEwh = pickingResult.ewh;
-            pickingWarning = pickingResult.warning;
-            pickingDetailedEwh = pickingResult.detailedEwh;
-            pickingSegments = pickingResult.segments;
+        if (data.pickingSingleTimes.length > 0) {
+            data.pickingSingleTimes.sort((a, b) => a - b);
+            const singleResult = calculateEfficiencyEWH(data.pickingSingleTimes);
+            pickingSingleEwh = singleResult.ewh;
+            pickingSingleWarning = singleResult.warning;
+            // 单品：正常不补偿，异常时补偿10%
+            pickingSingleDetailedEwh = singleResult.detailedEwh * 1.1; // 10% 补偿（仅异常时使用）
+            pickingSingleSegments = singleResult.segments;
+        }
+        
+        // 计算 Picking 多品 EWH（使用详细算法）
+        let pickingMultiEwh = 0;
+        let pickingMultiWarning = false;
+        let pickingMultiDetailedEwh = 0;
+        let pickingMultiSegments = [];
+        
+        if (data.pickingMultiTimes.length > 0) {
+            data.pickingMultiTimes.sort((a, b) => a - b);
+            const multiResult = calculateEfficiencyEWH(data.pickingMultiTimes);
+            pickingMultiEwh = multiResult.ewh;
+            pickingMultiWarning = multiResult.warning;
+            // 多品：始终使用详细EWH并补偿5%
+            pickingMultiDetailedEwh = multiResult.detailedEwh * 1.05; // 5% 补偿
+            pickingMultiSegments = multiResult.segments;
         }
         
         // 计算 Packing EWH
@@ -892,18 +916,23 @@ function aggregateEfficiencyData(pickingData, packingData) {
         }
         
         // 只添加有数据的员工
-        if (data.pickingQuantity > 0 || data.packingQuantity > 0) {
+        if (data.pickingSingleQuantity > 0 || data.pickingMultiQuantity > 0 || data.packingQuantity > 0) {
             result.push({
                 worker: workerName,
-                pickingQuantity: data.pickingQuantity,
+                pickingSingleQuantity: data.pickingSingleQuantity,
+                pickingMultiQuantity: data.pickingMultiQuantity,
                 packingQuantity: data.packingQuantity,
-                pickingEwh: pickingEwh,
+                pickingSingleEwh: pickingSingleEwh,
+                pickingMultiEwh: pickingMultiEwh,
                 packingEwh: packingEwh,
-                pickingWarning: pickingWarning,
+                pickingSingleWarning: pickingSingleWarning,
+                pickingMultiWarning: pickingMultiWarning,
                 packingWarning: packingWarning,
-                pickingDetailedEwh: pickingDetailedEwh,
+                pickingSingleDetailedEwh: pickingSingleDetailedEwh,
+                pickingMultiDetailedEwh: pickingMultiDetailedEwh,
                 packingDetailedEwh: packingDetailedEwh,
-                pickingSegments: pickingSegments,
+                pickingSingleSegments: pickingSingleSegments,
+                pickingMultiSegments: pickingMultiSegments,
                 packingSegments: packingSegments
             });
         }
@@ -949,16 +978,13 @@ function calculateEfficiencyEWH(times, thresholdMinutes = 15) {
         end: times[times.length - 1]
     });
     
-    // 如果有异常，使用精确计算（5分钟阈值）
-    let detailedEwh = 0;
-    if (hasLongGap) {
-        detailedEwh = calculateEWH(times, 5); // 使用现有的精确计算方法
-    }
+    // 始终计算精确 EWH（5分钟阈值）
+    const detailedEwh = calculateEWH(times, 5); // 使用现有的精确计算方法
     
     return {
         ewh: round(simpleEwh, 2),
         warning: hasLongGap,
-        detailedEwh: hasLongGap ? round(detailedEwh, 2) : 0,
+        detailedEwh: round(detailedEwh, 2), // 始终返回详细EWH
         segments: segments
     };
 }
@@ -971,12 +997,25 @@ function formatTime(date) {
 }
 
 // 应用组合表格样式
-function applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningRows, packingWarningRows) {
+function applyCombinedSheetStyle(ws, pickingSingleCount, pickingMultiCount, packingCount, pickingWarningRows, packingWarningRows) {
     const range = XLSX.utils.decode_range(ws['!ref']);
     
-    // 拣货标题样式（蓝色背景）
-    const pickingTitleStyle = {
+    // 拣货单品标题样式（蓝色背景）
+    const pickingSingleTitleStyle = {
         fill: { fgColor: { rgb: "0070C0" } },
+        font: { bold: true, color: { rgb: "FFFFFF" }, sz: 14 },
+        alignment: { horizontal: "center", vertical: "center" },
+        border: {
+            top: { style: "thin", color: { rgb: "000000" } },
+            bottom: { style: "thin", color: { rgb: "000000" } },
+            left: { style: "thin", color: { rgb: "000000" } },
+            right: { style: "thin", color: { rgb: "000000" } }
+        }
+    };
+    
+    // 拣货多品标题样式（绿色背景）
+    const pickingMultiTitleStyle = {
+        fill: { fgColor: { rgb: "00B050" } },
         font: { bold: true, color: { rgb: "FFFFFF" }, sz: 14 },
         alignment: { horizontal: "center", vertical: "center" },
         border: {
@@ -1052,12 +1091,19 @@ function applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningR
     const warningRowsSet = new Set([...pickingWarningRows, ...packingWarningRows]);
     
     // 计算行位置
-    const pickingTitleRow = 0;
-    const pickingHeaderRow = 1;
-    const pickingDataStart = 2;
-    const pickingDataEnd = pickingDataStart + pickingCount - 1;
-    const emptyRow = pickingDataEnd + 1;
-    const packingTitleRow = emptyRow + 1;
+    const singleTitleRow = 0;
+    const singleHeaderRow = 1;
+    const singleDataStart = 2;
+    const singleDataEnd = singleDataStart + pickingSingleCount - 1;
+    const empty1Row = singleDataEnd + 1;
+    
+    const multiTitleRow = empty1Row + 1;
+    const multiHeaderRow = multiTitleRow + 1;
+    const multiDataStart = multiHeaderRow + 1;
+    const multiDataEnd = multiDataStart + pickingMultiCount - 1;
+    const empty2Row = multiDataEnd + 1;
+    
+    const packingTitleRow = empty2Row + 1;
     const packingHeaderRow = packingTitleRow + 1;
     const packingDataStart = packingHeaderRow + 1;
     
@@ -1067,17 +1113,16 @@ function applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningR
             const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
             if (!ws[cellAddress]) continue;
             
-            // 拣货标题行
-            if (R === pickingTitleRow) {
-                ws[cellAddress].s = pickingTitleStyle;
+            // 单品标题行
+            if (R === singleTitleRow) {
+                ws[cellAddress].s = pickingSingleTitleStyle;
             }
-            // 拣货表头行
-            else if (R === pickingHeaderRow) {
+            // 单品表头行
+            else if (R === singleHeaderRow) {
                 ws[cellAddress].s = headerStyle;
             }
-            // 拣货数据行
-            else if (R >= pickingDataStart && R <= pickingDataEnd) {
-                // 检查单元格值是否为空
+            // 单品数据行
+            else if (R >= singleDataStart && R <= singleDataEnd) {
                 const cellValue = ws[cellAddress].v;
                 const isEmpty = cellValue === '' || cellValue === null || cellValue === undefined || cellValue === 0;
                 
@@ -1087,8 +1132,31 @@ function applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningR
                     ws[cellAddress].s = isEmpty ? emptyCellStyle : cellStyle;
                 }
             }
-            // 空行
-            else if (R === emptyRow) {
+            // 第一个空行
+            else if (R === empty1Row) {
+                // 不应用样式
+            }
+            // 多品标题行
+            else if (R === multiTitleRow) {
+                ws[cellAddress].s = pickingMultiTitleStyle;
+            }
+            // 多品表头行
+            else if (R === multiHeaderRow) {
+                ws[cellAddress].s = headerStyle;
+            }
+            // 多品数据行
+            else if (R >= multiDataStart && R <= multiDataEnd) {
+                const cellValue = ws[cellAddress].v;
+                const isEmpty = cellValue === '' || cellValue === null || cellValue === undefined || cellValue === 0;
+                
+                if (warningRowsSet.has(R)) {
+                    ws[cellAddress].s = warningStyle;
+                } else {
+                    ws[cellAddress].s = isEmpty ? emptyCellStyle : cellStyle;
+                }
+            }
+            // 第二个空行
+            else if (R === empty2Row) {
                 // 不应用样式
             }
             // 打包标题行
@@ -1101,7 +1169,6 @@ function applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningR
             }
             // 打包数据行
             else if (R >= packingDataStart) {
-                // 检查单元格值是否为空
                 const cellValue = ws[cellAddress].v;
                 const isEmpty = cellValue === '' || cellValue === null || cellValue === undefined || cellValue === 0;
                 
@@ -1116,18 +1183,19 @@ function applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningR
     
     // 合并标题单元格
     ws['!merges'] = [
-        { s: { r: pickingTitleRow, c: 0 }, e: { r: pickingTitleRow, c: 3 } }, // 拣货数据标题
+        { s: { r: singleTitleRow, c: 0 }, e: { r: singleTitleRow, c: 3 } },   // 拣货单品标题
+        { s: { r: multiTitleRow, c: 0 }, e: { r: multiTitleRow, c: 3 } },     // 拣货多品标题
         { s: { r: packingTitleRow, c: 0 }, e: { r: packingTitleRow, c: 3 } }  // 打包数据标题
     ];
     
     // 设置行高
     ws['!rows'] = [];
     for (let i = 0; i <= range.e.r; i++) {
-        if (i === pickingTitleRow || i === packingTitleRow) {
+        if (i === singleTitleRow || i === multiTitleRow || i === packingTitleRow) {
             ws['!rows'][i] = { hpt: 30 }; // 标题行
-        } else if (i === pickingHeaderRow || i === packingHeaderRow) {
+        } else if (i === singleHeaderRow || i === multiHeaderRow || i === packingHeaderRow) {
             ws['!rows'][i] = { hpt: 25 }; // 表头行
-        } else if (i === emptyRow) {
+        } else if (i === empty1Row || i === empty2Row) {
             ws['!rows'][i] = { hpt: 10 }; // 空行
         } else {
             ws['!rows'][i] = { hpt: 20 }; // 数据行
@@ -1147,41 +1215,83 @@ function exportEfficiencyReport(data) {
     const pickingWarningRows = [];  // 记录有警告的 Picking 行号
     const packingWarningRows = [];  // 记录有警告的 Packing 行号
     
-    // ========== 拣货数据部分 ==========
-    tableData.push(['拣货数据', '', '', '']); // 标题行
+    // ========== 拣货单品数据部分 ==========
+    tableData.push(['拣货单品', '', '', '']); // 标题行
     tableData.push(['员工', '件数', 'EWH', '备注']); // 表头
     
-            let pickingCount = 0;
+    let pickingSingleCount = 0;
     data.forEach(item => {
-        if (item.pickingQuantity > 0) {
-            let ewh = item.pickingEwh;
+        if (item.pickingSingleQuantity > 0) {
+            let ewh = item.pickingSingleEwh;
             let remark = '';
             
-            // 生成 Picking 工作时间段信息
-            if (item.pickingSegments && item.pickingSegments.length > 0) {
-                const timeRanges = item.pickingSegments.map(seg => 
+            // 生成工作时间段信息
+            if (item.pickingSingleSegments && item.pickingSingleSegments.length > 0) {
+                const timeRanges = item.pickingSingleSegments.map(seg => 
                     `${formatTime(seg.start)}-${formatTime(seg.end)}`
                 ).join(' ');
                 
-                if (item.pickingWarning) {
-                    // 如果有异常，EWH 列显示精确 EWH + 10% 补偿
-                    const compensatedEwh = round(item.pickingDetailedEwh * 1.1, 2);
-                    ewh = compensatedEwh;
-                    remark = `工作时间段: ${timeRanges} (原始: ${item.pickingEwh}h, 精确: ${item.pickingDetailedEwh}h, 已补偿10%)`;
+                if (item.pickingSingleWarning) {
+                    // 如果有异常，EWH 列显示精确 EWH + 10%补偿
+                    ewh = round(item.pickingSingleDetailedEwh, 2);
+                    remark = `工作时间段: ${timeRanges} (原始: ${item.pickingSingleEwh}h, 精确: ${round(item.pickingSingleDetailedEwh / 1.1, 2)}h, 已补偿10%)`;
                     pickingWarningRows.push(tableData.length); // 记录警告行号
-                    log(`${item.worker} [Picking]: 检测到工作中断，精确EWH ${item.pickingDetailedEwh}h → 补偿后 ${compensatedEwh}h`, 'warning');
+                    log(`${item.worker} [单品]: 检测到工作中断，精确EWH ${round(item.pickingSingleDetailedEwh / 1.1, 2)}h → 补偿后 ${ewh}h`, 'warning');
                 } else {
+                    // 正常情况不补偿
+                    ewh = round(item.pickingSingleEwh, 2);
                     remark = `工作时间段: ${timeRanges}`;
                 }
             }
             
             tableData.push([
                 item.worker,
-                item.pickingQuantity,
+                item.pickingSingleQuantity,
                 ewh,
                 remark
             ]);
-            pickingCount++;
+            pickingSingleCount++;
+        }
+    });
+    
+    // 添加空行分隔
+    tableData.push(['', '', '', '']);
+    
+    // ========== 拣货多品数据部分 ==========
+    tableData.push(['拣货多品', '', '', '']); // 标题行
+    tableData.push(['员工', '件数', 'EWH', '备注']); // 表头
+    
+    let pickingMultiCount = 0;
+    data.forEach(item => {
+        if (item.pickingMultiQuantity > 0) {
+            // 多品始终使用详细EWH（已含5%补偿）
+            let ewh = round(item.pickingMultiDetailedEwh, 2);
+            let remark = '';
+            
+            // 生成工作时间段信息
+            if (item.pickingMultiSegments && item.pickingMultiSegments.length > 0) {
+                const timeRanges = item.pickingMultiSegments.map(seg => 
+                    `${formatTime(seg.start)}-${formatTime(seg.end)}`
+                ).join(' ');
+                
+                if (item.pickingMultiWarning) {
+                    // 异常情况，显示详细信息
+                    remark = `工作时间段: ${timeRanges} (原始: ${item.pickingMultiEwh}h, 精确: ${round(item.pickingMultiDetailedEwh / 1.05, 2)}h, 已补偿5%)`;
+                    pickingWarningRows.push(tableData.length); // 记录警告行号
+                    log(`${item.worker} [多品]: 检测到工作中断，精确EWH ${round(item.pickingMultiDetailedEwh / 1.05, 2)}h → 补偿后 ${ewh}h`, 'warning');
+                } else {
+                    // 正常情况也使用详细EWH
+                    remark = `工作时间段: ${timeRanges} (精确计算, 已补偿5%)`;
+                }
+            }
+            
+            tableData.push([
+                item.worker,
+                item.pickingMultiQuantity,
+                ewh,
+                remark
+            ]);
+            pickingMultiCount++;
         }
     });
     
@@ -1195,7 +1305,7 @@ function exportEfficiencyReport(data) {
             let packingCount = 0;
     data.forEach(item => {
         if (item.packingQuantity > 0) {
-            let ewh = item.packingEwh;
+            let ewh = round(item.packingEwh, 2);
             let remark = '';
             
             // 生成 Packing 工作时间段信息
@@ -1208,9 +1318,9 @@ function exportEfficiencyReport(data) {
                     // 如果有异常，EWH 列显示精确 EWH + 10% 补偿
                     const compensatedEwh = round(item.packingDetailedEwh * 1.1, 2);
                     ewh = compensatedEwh;
-                    remark = `工作时间段: ${timeRanges} (原始: ${item.packingEwh}h, 精确: ${item.packingDetailedEwh}h, 已补偿10%)`;
+                    remark = `工作时间段: ${timeRanges} (原始: ${item.packingEwh}h, 精确: ${round(item.packingDetailedEwh, 2)}h, 已补偿10%)`;
                     packingWarningRows.push(tableData.length); // 记录警告行号
-                    log(`${item.worker} [Packing]: 检测到工作中断，精确EWH ${item.packingDetailedEwh}h → 补偿后 ${compensatedEwh}h`, 'warning');
+                    log(`${item.worker} [Packing]: 检测到工作中断，精确EWH ${round(item.packingDetailedEwh, 2)}h → 补偿后 ${compensatedEwh}h`, 'warning');
                 } else {
                     remark = `工作时间段: ${timeRanges}`;
                 }
@@ -1238,7 +1348,7 @@ function exportEfficiencyReport(data) {
     ];
     
     // 应用样式
-    applyCombinedSheetStyle(ws, pickingCount, packingCount, pickingWarningRows, packingWarningRows);
+    applyCombinedSheetStyle(ws, pickingSingleCount, pickingMultiCount, packingCount, pickingWarningRows, packingWarningRows);
     
     XLSX.utils.book_append_sheet(wb, ws, '人效表');
     
@@ -1251,8 +1361,9 @@ function exportEfficiencyReport(data) {
     XLSX.writeFile(wb, fileName);
     
     log(`\nExcel 文件已生成: ${fileName}`, 'success');
-    log(`拣货数据: ${pickingCount} 名员工`, 'info');
-    log(`打包数据: ${packingCount} 名员工`, 'info');
+    log(`拣货单品: ${pickingSingleCount} 名员工 (正常无补偿, 异常补偿10%)`, 'info');
+    log(`拣货多品: ${pickingMultiCount} 名员工 (精确计算+5%补偿)`, 'info');
+    log(`打包数据: ${packingCount} 名员工 (正常无补偿, 异常补偿10%)`, 'info');
     log('黄色标记行表示检测到工作中断，EWH已修正为精确值', 'info');
     log('\n报表生成成功！', 'success');
 }
