@@ -233,11 +233,14 @@ function parseExcelDate(excelDate) {
 
 // 计算 EWH (基于时间戳，5分钟阈值)
 function calculateEWH(timestamps, thresholdMinutes = 5) {
-    if (!timestamps || timestamps.length < 2) return 0;
+    // 添加更严格的数据验证
+    if (!timestamps || !Array.isArray(timestamps) || timestamps.length < 2) {
+        return 0;
+    }
     
     // 过滤并排序时间戳
     const times = timestamps
-        .filter(t => t instanceof Date && !isNaN(t.getTime()))
+        .filter(t => t && t instanceof Date && !isNaN(t.getTime()))
         .sort((a, b) => a - b);
     
     if (times.length < 2) return 0;
@@ -261,7 +264,9 @@ function calculateEWH(timestamps, thresholdMinutes = 5) {
     // 计算总时长
     let totalMs = 0;
     segments.forEach(([s, e]) => {
-        totalMs += e - s;
+        if (s && e && s instanceof Date && e instanceof Date) {
+            totalMs += e - s;
+        }
     });
     
     // 转换为小时
@@ -314,8 +319,28 @@ function generateReport() {
     
     setTimeout(() => {
         try {
+            // 验证数据完整性
+            if (!pickingData && !packingData) {
+                throw new Error('没有可用的数据文件');
+            }
+            
+            // 验证 preshipmentWorkers 数据
+            if (!Array.isArray(preshipmentWorkers)) {
+                log('警告: preshipmentWorkers 不是数组，将使用空数组', 'warning');
+                preshipmentWorkers = [];
+            }
+            
             // 汇总数据
             const report = aggregateData(pickingData, packingData, date, time, preshipmentWorkers);
+            
+            // 验证报告数据
+            if (!Array.isArray(report)) {
+                throw new Error('数据汇总失败，报告格式错误');
+            }
+            
+            if (report.length === 0) {
+                log('警告: 没有生成任何员工数据，请检查文件内容', 'warning');
+            }
             
             // 生成 Excel
             exportToExcel(report);
@@ -326,7 +351,8 @@ function generateReport() {
             
         } catch (error) {
             log(`\n生成报表失败: ${error.message}`, 'error');
-            console.error(error);
+            log(`错误详情: ${error.stack || '无详细信息'}`, 'error');
+            console.error('报表生成错误:', error);
         } finally {
             btn.disabled = false;
             btn.innerHTML = '生成每日工作报表';
@@ -341,10 +367,10 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
     const workerMap = new Map();
     
     // 处理 Picking 数据（分单品和多品）
-    if (pickingData && pickingData.length > 0) {
+    if (pickingData && Array.isArray(pickingData) && pickingData.length > 0) {
         const totalPickQuantity = pickingData.reduce((sum, item) => sum + (item.quantity || 0), 0);
-        const singleItems = pickingData.filter(item => item.itemType === 'single');
-        const multiItems = pickingData.filter(item => item.itemType === 'multi');
+        const singleItems = pickingData.filter(item => item && item.itemType === 'single');
+        const multiItems = pickingData.filter(item => item && item.itemType === 'multi');
         const singleCount = singleItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
         const multiCount = multiItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
         
@@ -353,6 +379,12 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
         log(`    - 多品: ${multiCount} 件 (${multiItems.length} 条)`);
         
         pickingData.forEach(item => {
+            // 添加数据验证
+            if (!item || !item.worker) {
+                log(`  警告: 跳过无效的 Picking 记录`, 'warning');
+                return;
+            }
+            
             if (!workerMap.has(item.worker)) {
                 workerMap.set(item.worker, {
                     worker: item.worker,
@@ -367,15 +399,23 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
                 });
             }
             const worker = workerMap.get(item.worker);
-            worker.pickingTimes.push(item.time);
+            
+            // 确保时间数据有效
+            if (item.time && item.time instanceof Date) {
+                worker.pickingTimes.push(item.time);
+            }
             worker.pickCount += item.quantity || 1;
             
             // 分类统计单品和多品
             if (item.itemType === 'single') {
-                worker.pickingSingleTimes.push(item.time);
+                if (item.time && item.time instanceof Date) {
+                    worker.pickingSingleTimes.push(item.time);
+                }
                 worker.pickSingleCount += item.quantity || 1;
             } else if (item.itemType === 'multi') {
-                worker.pickingMultiTimes.push(item.time);
+                if (item.time && item.time instanceof Date) {
+                    worker.pickingMultiTimes.push(item.time);
+                }
                 worker.pickMultiCount += item.quantity || 1;
             }
         });
@@ -383,11 +423,17 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
     }
     
     // 处理 Packing 数据
-    if (packingData && packingData.length > 0) {
+    if (packingData && Array.isArray(packingData) && packingData.length > 0) {
         const totalPackQuantity = packingData.reduce((sum, item) => sum + (item.quantity || 0), 0);
         log(`  处理 Packing 数据 (${packingData.length} 条记录, 总数量: ${totalPackQuantity})`);
         
         packingData.forEach(item => {
+            // 添加数据验证
+            if (!item || !item.worker) {
+                log(`  警告: 跳过无效的 Packing 记录`, 'warning');
+                return;
+            }
+            
             if (!workerMap.has(item.worker)) {
                 workerMap.set(item.worker, {
                     worker: item.worker,
@@ -398,8 +444,12 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
                 });
             }
             const worker = workerMap.get(item.worker);
-            worker.packingTimes.push(item.time);
-            worker.packCount += item.quantity;
+            
+            // 确保时间数据有效
+            if (item.time && item.time instanceof Date) {
+                worker.packingTimes.push(item.time);
+            }
+            worker.packCount += item.quantity || 1;
         });
         log(`  Packing 数据处理完成`);
     }
@@ -409,19 +459,24 @@ function aggregateData(pickingData, packingData, date, time, preshipmentWorkers)
     const report = [];
     
     workerMap.forEach((data, worker) => {
+        // 确保所有时间数组都存在且为数组
+        const pickingSingleTimes = Array.isArray(data.pickingSingleTimes) ? data.pickingSingleTimes : [];
+        const pickingMultiTimes = Array.isArray(data.pickingMultiTimes) ? data.pickingMultiTimes : [];
+        const packingTimes = Array.isArray(data.packingTimes) ? data.packingTimes : [];
+        
         // 计算 Picking 单品和多品 EWH（详细算法 + 5% 补偿）
-        const pickingSingleEWH = data.pickingSingleTimes.length > 0 
-            ? calculateEWH(data.pickingSingleTimes) * 1.05  // 5% 补偿
+        const pickingSingleEWH = pickingSingleTimes.length > 0 
+            ? calculateEWH(pickingSingleTimes) * 1.05  // 5% 补偿
             : 0;
-        const pickingMultiEWH = data.pickingMultiTimes.length > 0 
-            ? calculateEWH(data.pickingMultiTimes) * 1.05   // 5% 补偿
+        const pickingMultiEWH = pickingMultiTimes.length > 0 
+            ? calculateEWH(pickingMultiTimes) * 1.05   // 5% 补偿
             : 0;
         
         // 计算总 Picking EWH
         const pickingEWH = pickingSingleEWH + pickingMultiEWH;
         
         // 计算 Packing EWH
-        const packingEWH = calculateEWH(data.packingTimes);
+        const packingEWH = packingTimes.length > 0 ? calculateEWH(packingTimes) : 0;
         
         // 计算总 EWH
         const totalEWH = pickingEWH + packingEWH;
