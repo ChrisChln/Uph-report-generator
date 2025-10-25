@@ -82,13 +82,48 @@
                 
                 <!-- 生成按钮 -->
                 <section class="action-section">
-                    <button class="btn-primary" id="generateBtn" onclick="generateReport()">
-                        生成每日工作报表
-                    </button>
-                    <button class="btn-secondary" id="efficiencyBtn" onclick="generateEfficiencyReport()">
-                        人效表
+                    <button class="btn-primary" id="generateBtn" onclick="openFunctionModal()">
+                        运行
                     </button>
                 </section>
+            </div>
+        </div>
+    </div>
+
+    <!-- 功能选择弹窗 -->
+    <div id="functionModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>选择报表类型</h2>
+                <span class="close" onclick="closeFunctionModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="function-list">
+                    <div class="function-item">
+                        <label class="function-checkbox">
+                            <input type="checkbox" id="dailyReport" value="daily" checked>
+                            <span class="checkmark"></span>
+                            <div class="function-info">
+                                <h3>每日工作报表</h3>
+                                <p>生成包含所有员工工作量的详细报表</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="function-item">
+                        <label class="function-checkbox">
+                            <input type="checkbox" id="efficiencyReport" value="efficiency">
+                            <span class="checkmark"></span>
+                            <div class="function-info">
+                                <h3>人效表</h3>
+                                <p>生成上午时段(00:00-12:00)的人效分析报表</p>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-secondary" onclick="closeFunctionModal()">取消</button>
+                    <button class="btn-primary" onclick="executeSelectedFunctions()">运行</button>
+                </div>
             </div>
         </div>
     </div>
